@@ -4,7 +4,7 @@ from datetime import date, timedelta
 import time
 import gspread 
 import numpy as np 
-import uuid # Biblioteca para gerar IDs Únicos (Primary Keys)
+import uuid 
 
 # ==============================================================================
 # 🚨 CONFIGURAÇÃO GOOGLE SHEETS E CONEXÃO 🚨
@@ -12,8 +12,9 @@ import uuid # Biblioteca para gerar IDs Únicos (Primary Keys)
 
 # Defina a URL ou ID da sua planilha AQUI
 SHEET_ID = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBHFr9Q-4g' 
+PLANILHA_TITULO = 'Dados Automóvel' # ⬅️ NOVO: Título exato da planilha
 
-@st.cache_resource(ttl=3600) # Cache para a conexão não abrir a cada execução
+@st.cache_resource(ttl=3600) 
 def get_gspread_client():
     """Retorna o cliente Gspread autenticado."""
     try:
@@ -27,11 +28,10 @@ def get_gspread_client():
         st.error(f"Erro de autenticação Gspread. {e}")
         st.stop()
 
-@st.cache_data(ttl=5) # Cache para leitura rápida (revalida a cada 5 segundos)
+@st.cache_data(ttl=5) 
 def get_sheet_data(sheet_name):
     """Lê os dados de uma aba/sheet e retorna um DataFrame, com conversões iniciais."""
     
-    # 🛑 AJUSTADO: Todos os IDs de Veículo usam 'id_veiculo'
     expected_cols = {
         'veiculo': ['id_veiculo', 'nome', 'placa', 'renavam', 'ano', 'valor_pago', 'data_compra'],
         'prestador': ['id_prestador', 'empresa', 'telefone', 'nome_prestador', 'cnpj', 'email', 'endereco', 'numero', 'cidade', 'bairro', 'cep'],
@@ -40,7 +40,15 @@ def get_sheet_data(sheet_name):
 
     try:
         gc = get_gspread_client()
-        sh = gc.open_by_key(SHEET_ID)
+        
+        # TENTA CONECTAR PELA CHAVE (MÉTODO PADRÃO E RÁPIDO)
+        try:
+            sh = gc.open_by_key(SHEET_ID)
+        except Exception as e:
+            # SE FALHAR (Geralmente 404/Permissão no Drive), TENTA PELO TÍTULO
+            st.warning(f"Falha na conexão por Chave ({e}). Tentando por Título...")
+            sh = gc.open(PLANILHA_TITULO)
+        
         worksheet = sh.worksheet(sheet_name)
         
         data = worksheet.get_all_records()
@@ -70,7 +78,8 @@ def get_sheet_data(sheet_name):
         st.error(f"A aba/sheet **'{sheet_name}'** não foi encontrada na planilha. Verifique a ortografia.")
         return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
     except Exception as e:
-        st.error(f"Erro ao ler a sheet '{sheet_name}': {e}. Verifique se a SERVICE ACCOUNT tem permissão de EDITOR.")
+        # Erro genérico (incluindo falha de conexão pelo Título também)
+        st.error(f"Falha Crítica ao conectar à planilha. Verifique as permissões de EDITOR: {e}")
         return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
 
 
@@ -78,12 +87,17 @@ def write_sheet_data(sheet_name, df_new):
     """Sobrescreve a aba/sheet com o novo DataFrame (usado em Update/Delete)."""
     try:
         gc = get_gspread_client()
-        sh = gc.open_by_key(SHEET_ID)
-        worksheet = sh.worksheet(sheet_name)
-
-        # Não é necessário renomear para 'idveiculo', pois agora usamos 'id_veiculo'
-        df_to_write = df_new
         
+        # TENTA CONECTAR PELA CHAVE (MÉTODO PADRÃO E RÁPIDO)
+        try:
+            sh = gc.open_by_key(SHEET_ID)
+        except Exception:
+            # TENTA PELO TÍTULO, caso o acesso por chave falhe (plano B)
+            sh = gc.open(PLANILHA_TITULO)
+
+        worksheet = sh.worksheet(sheet_name)
+        
+        df_to_write = df_new
         data_to_write = [df_to_write.columns.tolist()] + df_to_write.values.tolist()
         
         worksheet.clear()
@@ -136,15 +150,12 @@ def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, op
             sh = gc.open_by_key(SHEET_ID)
             worksheet = sh.worksheet(sheet_name)
 
-            # Define a ordem correta das colunas (pega do DF cacheado)
             df_cols = get_sheet_data(sheet_name).columns.tolist()
             if not df_cols:
                 df_cols = list(data.keys()) 
             
-            # Mapeia o dicionário de dados para a ordem da lista
             row_to_write = [data.get(col, '') for col in df_cols]
 
-            # Anexa APENAS a nova linha (MUITO MAIS RÁPIDO QUE REESCREVER TUDO)
             worksheet.append_row(row_to_write, value_input_option='USER_ENTERED')
             
             get_sheet_data.clear()
