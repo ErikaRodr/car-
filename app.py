@@ -4,7 +4,7 @@ from datetime import date, timedelta
 import time
 import gspread 
 import numpy as np 
-import uuid 
+# REMOVIDO: import uuid # Biblioteca para gerar IDs Únicos (Primary Keys)
 
 # ==============================================================================
 # 🚨 CONFIGURAÇÃO GOOGLE SHEETS E CONEXÃO 🚨
@@ -12,10 +12,8 @@ import uuid
 
 # Defina a URL ou ID da sua planilha AQUI
 SHEET_ID = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBHFr9Q-4g' 
-# O nome REAL da planilha. Deve ser EXATO.
-PLANILHA_TITULO = 'Dados Automóvel' 
-# Usaremos o ID como título alternativo de fallback
-PLANILHA_TITULO_ALTERNATE = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBHFr9Q-4g' 
+PLANILHA_TITULO = 'Dados Automóvel' # Usado como fallback
+PLANILHA_TITULO_ALTERNATE = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBHFr9Q-4g'
 
 
 @st.cache_resource(ttl=3600) 
@@ -58,7 +56,6 @@ def get_sheet_data(sheet_name):
                      st.warning(f"Falha ao abrir por Título Normal. Tentando por Título como ID (Alternativo)...")
                      sh = gc.open(PLANILHA_TITULO_ALTERNATE)
                  except Exception as e:
-                    # Se falhar todas as 3 vezes, exibe a falha crítica
                     st.error(f"Falha Crítica ao conectar à planilha. Verifique se a Service Account tem permissão de EDITOR na planilha: {e}")
                     return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
         
@@ -85,13 +82,17 @@ def get_sheet_data(sheet_name):
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors='coerce')
         
+        # 🛑 RESTAURADO: Conversão de IDs para INT (Auto-incremento simulado)
+        id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
+        if id_col in df.columns:
+             df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
+
         return df
 
     except gspread.WorksheetNotFound:
         st.error(f"A aba/sheet **'{sheet_name}'** não foi encontrada na planilha. Verifique a ortografia.")
         return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
     except Exception as e:
-        # Erro genérico (incluindo falha de conexão pelo Título também)
         st.error(f"Falha Crítica na Planilha: {e}. Verifique se a Service Account tem permissão de EDITOR na planilha.")
         return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
 
@@ -136,9 +137,10 @@ def get_data(sheet_name, filter_col=None, filter_value=None):
     
     if filter_col and filter_value is not None:
         try:
+            # 🛑 RESTAURADO: IDs são tratados como INTs (para auto-incremento)
             if filter_col.startswith('id_') or filter_col in ['id_veiculo', 'id_prestador']:
-                df[filter_col] = df[filter_col].astype(str)
-                filter_value = str(filter_value)
+                df[filter_col] = pd.to_numeric(df[filter_col], errors='coerce').fillna(0).astype(int)
+                filter_value = int(filter_value)
             
             df_filtered = df[df[filter_col] == filter_value]
             return df_filtered
@@ -149,51 +151,41 @@ def get_data(sheet_name, filter_col=None, filter_value=None):
 
 
 def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, operation='insert'):
-    """Executa as operações CRUD no Google Sheets, priorizando append_row para inserção."""
+    """Executa as operações CRUD no Google Sheets (Simulando auto-incremento)."""
+    df = get_data(sheet_name)
     
     id_col = f'id_{sheet_name}' if id_col is None else id_col
     
-    # 1. INSERÇÃO RÁPIDA (APPEND_ROW)
+    # 1. INSERÇÃO (COM AUTO-INCREMENTO SIMULADO)
     if operation == 'insert':
-        new_id = str(uuid.uuid4())
+        # 🛑 RESTAURADO: Lógica de auto-incremento (frágil, mas original)
+        new_id = 1
+        if not df.empty and id_col in df.columns:
+            df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
+            new_id = df[id_col].max() + 1
+
         data[id_col] = new_id
         
-        try:
-            gc = get_gspread_client()
-            
-            sh = None
-            try:
-                sh = gc.open_by_key(SHEET_ID)
-            except Exception:
-                sh = gc.open(PLANILHA_TITULO)
+        df_new_row = pd.DataFrame([data])
+        
+        if df.empty:
+            df_updated = df_new_row
+        else:
+            df_updated = pd.concat([df, df_new_row], ignore_index=True)
+            df_updated = df_updated[df.columns] 
 
-            worksheet = sh.worksheet(sheet_name)
-
-            df_cols = get_sheet_data(sheet_name).columns.tolist()
-            if not df_cols:
-                df_cols = list(data.keys()) 
-            
-            row_to_write = [data.get(col, '') for col in df_cols]
-
-            worksheet.append_row(row_to_write, value_input_option='USER_ENTERED')
-            
-            get_sheet_data.clear()
-
-            return True, new_id
-
-        except Exception as e:
-            st.error(f"Erro ao anexar a linha na sheet '{sheet_name}': {e}")
-            return False, None
+        success = write_sheet_data(sheet_name, df_updated)
+        return success, new_id if success else None
 
 
-    # 2. ATUALIZAÇÃO OU EXCLUSÃO (UPDATE/DELETE) - Usa o método lento de reescrever
+    # 2. ATUALIZAÇÃO OU EXCLUSÃO (UPDATE/DELETE)
     elif operation in ['update', 'delete']:
-        df = get_data(sheet_name)
         if df.empty or id_value is None:
             return False, None
         
-        id_value = str(id_value)
-        df[id_col] = df[id_col].astype(str)
+        # 🛑 RESTAURADO: ID da coluna e valor de busca como INTs
+        id_value = int(id_value)
+        df[id_col] = df[id_col].astype(int)
         
         index_to_modify = df[df[id_col] == id_value].index
         
@@ -225,11 +217,11 @@ def get_full_service_data(date_start=None, date_end=None):
     if df_servicos.empty or df_veiculos.empty or df_prestadores.empty:
         return pd.DataFrame()
     
-    # Conversão de IDs para STRING para garantir o MERGE (Chave Estrangeira)
-    df_servicos['id_veiculo'] = df_servicos['id_veiculo'].astype(str)
-    df_servicos['id_prestador'] = df_servicos['id_prestador'].astype(str)
-    df_veiculos['id_veiculo'] = df_veiculos['id_veiculo'].astype(str)
-    df_prestadores['id_prestador'] = df_prestadores['id_prestador'].astype(str)
+    # 🛑 RESTAURADO: Conversão de IDs para INT para garantir o MERGE (Chave Estrangeira)
+    df_servicos['id_veiculo'] = pd.to_numeric(df_servicos['id_veiculo'], errors='coerce').fillna(0).astype(int)
+    df_servicos['id_prestador'] = pd.to_numeric(df_servicos['id_prestador'], errors='coerce').fillna(0).astype(int)
+    df_veiculos['id_veiculo'] = pd.to_numeric(df_veiculos['id_veiculo'], errors='coerce').fillna(0).astype(int)
+    df_prestadores['id_prestador'] = pd.to_numeric(df_prestadores['id_prestador'], errors='coerce').fillna(0).astype(int)
     
     # Conversões numéricas e de data
     df_servicos['valor'] = pd.to_numeric(df_servicos['valor'], errors='coerce').fillna(0.0).astype(float)
@@ -258,215 +250,6 @@ def get_full_service_data(date_start=None, date_end=None):
         df_merged = df_merged[(df_merged['Data'] >= pd.to_datetime(date_start)) & (df_merged['Data'] <= pd.to_datetime(date_end))]
         
     return df_merged.sort_values(by='Data', ascending=False)
-
-
-# --- FUNÇÕES DE CRUD DE ALTO NÍVEL (INSERTS/UPDATES/DELETES) ---
-
-# --- CRUD Veiculo ---
-def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
-    if placa:
-        df_check = get_data('veiculo', 'placa', placa)
-        if not df_check.empty:
-            st.error(f"Placa '{placa}' já cadastrada.")
-            return False
-        
-    data = {
-        'id_veiculo': 0, 'nome': nome, 'placa': placa, 
-        'ano': ano, 'valor_pago': float(valor_pago), 
-        'data_compra': data_compra.isoformat() 
-    }
-    
-    success, _ = execute_crud_operation('veiculo', data=data, id_col='id_veiculo', operation='insert')
-    
-    if success:
-        st.success(f"Veiculo '{nome}' ({placa}) cadastrado com sucesso!")
-        st.session_state['edit_vehicle_id'] = None
-        st.rerun() 
-    else:
-        st.error("Falha ao cadastrar Veiculo.")
-
-def update_vehicle(id_veiculo, nome, placa, ano, valor_pago, data_compra):
-    if placa:
-        df_check = get_data('veiculo', 'placa', placa)
-        if not df_check.empty:
-            found_id = str(df_check.iloc[0]['id_veiculo']) 
-            if found_id != str(id_veiculo): 
-                st.error(f"Placa '{placa}' já cadastrada para outro Veiculo (ID {found_id}).")
-                return False
-
-    data = {
-        'nome': nome, 'placa': placa, 
-        'ano': ano, 'valor_pago': float(valor_pago), 
-        'data_compra': data_compra.isoformat() 
-    }
-    
-    success, _ = execute_crud_operation('veiculo', data=data, id_col='id_veiculo', id_value=str(id_veiculo), operation='update')
-    
-    if success:
-        st.success(f"Veiculo '{nome}' ({placa}) atualizado com sucesso!")
-        st.session_state['edit_vehicle_id'] = None
-        st.rerun() 
-    else:
-        st.error("Falha ao atualizar Veiculo.")
-
-def delete_vehicle(id_veiculo):
-    df_servicos = get_data('servico', 'id_veiculo', str(id_veiculo))
-    if not df_servicos.empty:
-        st.error("Não é possível remover o Veiculo. Existem serviços vinculados a ele.")
-        return False
-        
-    success, _ = execute_crud_operation('veiculo', id_col='id_veiculo', id_value=str(id_veiculo), operation='delete')
-    
-    if success:
-        st.success("Veiculo removido com sucesso!")
-        time.sleep(1)
-        st.rerun() 
-    else:
-        st.error("Falha ao remover Veiculo.")
-
-# --- CRUD Prestador ---
-def insert_new_prestador(empresa, telefone, nome_prestador, cnpj, email, endereco, numero, cidade, bairro, cep):
-    df_check = get_data("prestador", "empresa", empresa)
-    if not df_check.empty:
-        st.warning(f"A empresa '{empresa}' já está cadastrada.")
-        return False
-        
-    data = {
-        'id_prestador': 0, 'empresa': empresa, 'telefone': telefone, 'nome_prestador': nome_prestador, 
-        'cnpj': cnpj, 'email': email, 'endereco': endereco, 'numero': numero, 
-        'cidade': cidade, 'bairro': bairro, 'cep': cep
-    }
-    
-    success, _ = execute_crud_operation('prestador', data=data, id_col='id_prestador', operation='insert')
-    
-    if success:
-        st.success(f"Prestador '{empresa}' cadastrado com sucesso!")
-        st.session_state['edit_prestador_id'] = None
-        st.rerun() 
-        return True
-    return False
-
-def update_prestador(id_prestador, empresa, telefone, nome_prestador, cnpj, email, endereco, numero, cidade, bairro, cep):
-    data = {
-        'empresa': empresa, 'telefone': telefone, 'nome_prestador': nome_prestador, 
-        'cnpj': cnpj, 'email': email, 'endereco': endereco, 'numero': numero, 
-        'cidade': cidade, 'bairro': bairro, 'cep': cep
-    }
-    
-    success, _ = execute_crud_operation('prestador', data=data, id_col='id_prestador', id_value=str(id_prestador), operation='update')
-    
-    if success:
-        st.success(f"Prestador '{empresa}' atualizado com sucesso!")
-        st.session_state['edit_prestador_id'] = None
-        st.rerun() 
-        return True
-    return False
-
-def delete_prestador(id_prestador):
-    df_servicos = get_data('servico', 'id_prestador', str(id_prestador))
-    if not df_servicos.empty:
-        st.error("Não é possível remover o prestador. Existem serviços vinculados a ele.")
-        return False
-
-    success, _ = execute_crud_operation('prestador', id_col='id_prestador', id_value=str(id_prestador), operation='delete')
-    
-    if success:
-        st.success("Prestador removido com sucesso!")
-        time.sleep(1)
-        st.rerun() 
-    else:
-        st.error("Falha ao remover prestador.")
-
-def insert_prestador(empresa, telefone, nome_prestador, cnpj, email, endereco, numero, cidade, bairro, cep):
-    """Insere ou atualiza um prestador (usado no cadastro de Serviço)."""
-    df = get_data("prestador", "empresa", empresa)
-    
-    if not df.empty:
-        id_prestador = str(df.iloc[0]['id_prestador'])
-        update_prestador(id_prestador, empresa, telefone, nome_prestador, cnpj, email, endereco, numero, cidade, bairro, cep)
-        st.info(f"Dados do Prestador '{empresa}' atualizados.")
-        return id_prestador
-    
-    data = {
-        'id_prestador': 0, 'empresa': empresa, 'telefone': telefone, 'nome_prestador': nome_prestador, 
-        'cnpj': cnpj, 'email': email, 'endereco': endereco, 'numero': numero, 
-        'cidade': cidade, 'bairro': bairro, 'cep': cep
-    }
-    success, new_id = execute_crud_operation('prestador', data=data, id_col='id_prestador', operation='insert')
-    
-    return new_id if success else None
-
-# --- CRUD Serviço ---
-def insert_service(id_veiculo, id_prestador, nome_servico, data_servico, garantia_dias, valor, km_realizado, km_proxima_revisao, registro):
-    data_servico_dt = pd.to_datetime(data_servico)
-    
-    # CÁLCULO 1: DATA DE VENCIMENTO
-    garantia_dias_int = int(garantia_dias) 
-    data_vencimento = data_servico_dt + timedelta(days=garantia_dias_int)
-
-    data = {
-        'id_servico': 0, 
-        'id_veiculo': str(id_veiculo), 
-        'id_prestador': str(id_prestador), 
-        'nome_servico': nome_servico, 
-        'data_servico': data_servico_dt.date().isoformat(), 
-        'garantia_dias': str(garantia_dias), 
-        'valor': float(valor), 
-        'km_realizado': str(km_realizado), 
-        'km_proxima_revisao': str(km_proxima_revisao), 
-        'registro': registro, 
-        'data_vencimento': data_vencimento.date().isoformat() # Data de vencimento salva
-    }
-    
-    success, _ = execute_crud_operation('servico', data=data, id_col='id_servico', operation='insert')
-    
-    if success:
-        st.success(f"Serviço '{nome_servico}' cadastrado com sucesso!")
-        if 'edit_service_id' in st.session_state:
-            del st.session_state['edit_service_id']
-        st.rerun() 
-    else:
-        st.error("Falha ao cadastrar serviço.")
-
-def update_service(id_servico, id_veiculo, id_prestador, nome_servico, data_servico, garantia_dias, valor, km_realizado, km_proxima_revisao, registro):
-    data_servico_dt = pd.to_datetime(data_servico)
-    
-    # CÁLCULO 1: DATA DE VENCIMENTO
-    garantia_dias_int = int(garantia_dias) 
-    data_vencimento = data_servico_dt + timedelta(days=garantia_dias_int)
-
-    data = {
-        'id_veiculo': str(id_veiculo), 
-        'id_prestador': str(id_prestador), 
-        'nome_servico': nome_servico, 
-        'data_servico': data_servico_dt.date().isoformat(), 
-        'garantia_dias': str(garantia_dias), 
-        'valor': float(valor), 
-        'km_realizado': str(km_realizado), 
-        'km_proxima_revisao': str(km_proxima_revisao), 
-        'registro': registro,
-        'data_vencimento': data_vencimento.date().isoformat() # Data de vencimento salva
-    }
-    
-    success, _ = execute_crud_operation('servico', data=data, id_col='id_servico', id_value=str(id_servico), operation='update')
-    
-    if success:
-        st.success(f"Serviço '{nome_servico}' atualizado com sucesso!")
-        if 'edit_service_id' in st.session_state:
-            del st.session_state['edit_service_id']
-        st.rerun() 
-    else:
-        st.error("Falha ao atualizar serviço.")
-
-def delete_service(id_servico):
-    success, _ = execute_crud_operation('servico', id_col='id_servico', id_value=str(id_servico), operation='delete')
-    
-    if success:
-        st.success("Serviço removido com sucesso!")
-        time.sleep(1)
-        st.rerun() 
-    else:
-        st.error("Falha ao remover serviço.")
 
 
 # ==============================================================================
@@ -504,7 +287,7 @@ def display_vehicle_table_and_actions(df_veiculos_listagem):
     st.markdown('---') 
     
     for index, row in df_veiculos_listagem.iterrows():
-        id_veiculo = str(row['id_veiculo']) 
+        id_veiculo = int(row['id_veiculo']) 
         
         col_data, col_actions = st.columns([0.85, 0.15]) 
         
@@ -540,7 +323,7 @@ def display_prestador_table_and_actions(df_prestadores_listagem):
     st.markdown('---') 
     
     for index, row in df_prestadores_listagem.iterrows():
-        id_prestador = str(row['id_prestador']) 
+        id_prestador = int(row['id_prestador']) 
         
         col_data, col_actions = st.columns([0.85, 0.15]) 
         
@@ -577,7 +360,7 @@ def display_service_table_and_actions(df_servicos_listagem):
     st.markdown('---') 
     
     for index, row in df_servicos_listagem.iterrows():
-        id_servico = str(row['id_servico']) 
+        id_servico = int(row['id_servico']) 
         
         data_display = row['Data'].strftime('%d-%m-%Y') if pd.notna(row['Data']) else 'N/A'
         
@@ -647,7 +430,7 @@ def manage_vehicle_form():
             submit_label = 'Atualizar Veiculo'
             
             try:
-                selected_row = df_veiculos[df_veiculos['id_veiculo'] == str(vehicle_id_to_edit)].iloc[0]
+                selected_row = df_veiculos[df_veiculos['id_veiculo'] == int(vehicle_id_to_edit)].iloc[0]
             except:
                 st.error("Dados do Veiculo não encontrados para edição.")
                 del st.session_state['edit_vehicle_id']
@@ -743,7 +526,7 @@ def manage_prestador_form():
         else: # MODO EDIÇÃO
             submit_label = 'Atualizar Prestador'
             try:
-                selected_row = df_prestadores[df_prestadores['id_prestador'] == str(prestador_id_to_edit)].iloc[0]
+                selected_row = df_prestadores[df_prestadores['id_prestador'] == int(prestador_id_to_edit)].iloc[0]
             except:
                 st.error("Dados do prestador não encontrados para edição.")
                 del st.session_state['edit_prestador_id']
@@ -824,8 +607,8 @@ def manage_service_form():
         st.warning("⚠️ Por favor, cadastre pelo menos um Veiculo e um prestador primeiro.")
         return
     
-    df_veiculos['id_veiculo'] = df_veiculos['id_veiculo'].astype(str)
-    df_prestadores['id_prestador'] = df_prestadores['id_prestador'].astype(str)
+    df_veiculos['id_veiculo'] = df_veiculos['id_veiculo'].astype(int)
+    df_prestadores['id_prestador'] = df_prestadores['id_prestador'].astype(int)
     
     df_veiculos['display_name'] = df_veiculos['nome'] + ' (' + df_veiculos['placa'] + ')'
     veiculos_map = pd.Series(df_veiculos.id_veiculo.values, index=df_veiculos.display_name).to_dict()
@@ -866,7 +649,7 @@ def manage_service_form():
             submit_label = 'Atualizar Serviço'
             
             try:
-                df_data = get_data("servico", "id_servico", str(service_id_to_edit))
+                df_data = get_data("servico", "id_servico", int(service_id_to_edit))
             except Exception as e:
                 st.error(f"Erro ao buscar dados do serviço ID {service_id_to_edit}: {e}")
                 df_data = pd.DataFrame()
@@ -880,8 +663,8 @@ def manage_service_form():
             data = df_data.iloc[0].to_dict()
             st.header(f"✏️ Editando Serviço ID: {service_id_to_edit}")
             
-            current_id_veiculo = str(data['id_veiculo'])
-            current_id_prestador = str(data['id_prestador'])
+            current_id_veiculo = int(data['id_veiculo'])
+            current_id_prestador = int(data['id_prestador'])
 
             current_vehicle_row = df_veiculos[df_veiculos['id_veiculo'] == current_id_veiculo].iloc[0]
             current_vehicle_name = current_vehicle_row['display_name']
