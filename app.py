@@ -12,8 +12,7 @@ import uuid
 
 # Defina a URL ou ID da sua planilha AQUI
 SHEET_ID = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBHFr9Q-4g' 
-PLANILHA_TITULO = 'Dados Automóvel' # ⬅️ USADO COMO FALLBACK
-# Se o título falhar, tente remover o acento (Dados Automovel)
+PLANILHA_TITULO = 'Dados Automóvel' 
 
 @st.cache_resource(ttl=3600) 
 def get_gspread_client():
@@ -42,13 +41,18 @@ def get_sheet_data(sheet_name):
     try:
         gc = get_gspread_client()
         
-        # 🛑 REFAZENDO A LÓGICA DE CONEXÃO: Tenta por chave, se falhar, tenta por título.
+        # 🛑 LÓGICA DUPLA DE CONEXÃO: Tenta por chave, se falhar, tenta por título.
+        sh = None
         try:
             sh = gc.open_by_key(SHEET_ID)
         except Exception:
-            # Planoi B, usando o TÍTULO (pode falhar devido a acentos)
-            st.warning(f"Falha ao abrir por Chave (ID: {SHEET_ID}). Tentando por Título...")
-            sh = gc.open(PLANILHA_TITULO)
+            try:
+                st.warning(f"Falha ao abrir por Chave (ID: {SHEET_ID}). Tentando por Título...")
+                sh = gc.open(PLANILHA_TITULO)
+            except Exception as e:
+                 # Se falhar pelo título também, exibe a falha crítica
+                st.error(f"Falha Crítica ao conectar à planilha. Verifique se a Service Account tem permissão de EDITOR na planilha e o nome: {e}")
+                return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
         
         worksheet = sh.worksheet(sheet_name)
         
@@ -79,8 +83,8 @@ def get_sheet_data(sheet_name):
         st.error(f"A aba/sheet **'{sheet_name}'** não foi encontrada na planilha. Verifique a ortografia.")
         return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
     except Exception as e:
-        # Se a exceção for um 404/permissão, exibe a mensagem de erro específica.
-        st.error(f"Falha Crítica ao conectar à planilha. Verifique se a Service Account tem permissão de EDITOR na planilha e tente limpar o cache: {e}")
+        # Erro genérico (incluindo falha de conexão pelo Título também)
+        st.error(f"Falha Crítica na Planilha: {e}. Verifique se a Service Account tem permissão de EDITOR na planilha.")
         return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
 
 
@@ -89,7 +93,8 @@ def write_sheet_data(sheet_name, df_new):
     try:
         gc = get_gspread_client()
         
-        # 🛑 REFAZENDO A LÓGICA DE CONEXÃO
+        # 🛑 LÓGICA DUPLA DE CONEXÃO PARA ESCRITA
+        sh = None
         try:
             sh = gc.open_by_key(SHEET_ID)
         except Exception:
@@ -111,9 +116,143 @@ def write_sheet_data(sheet_name, df_new):
         st.error(f"Erro ao escrever na sheet '{sheet_name}': {e}")
         return False
 
-# [O restante do código (funções CRUD, get_full_service_data, etc.) permanece inalterado]
+# ==============================================================================
+# 🚨 FUNÇÕES DE ACESSO A DADOS E MANIPULAÇÃO (CRITICAL) 🚨
+# ==============================================================================
 
-# --- O restante do código não foi alterado na lógica de dados ---
+def get_data(sheet_name, filter_col=None, filter_value=None):
+    """Busca dados de uma aba/sheet e retorna um DataFrame do Pandas, com filtro opcional."""
+    df = get_sheet_data(sheet_name) 
+    if df.empty:
+        return df
+    
+    if filter_col and filter_value is not None:
+        try:
+            if filter_col.startswith('id_') or filter_col in ['id_veiculo', 'id_prestador']:
+                df[filter_col] = df[filter_col].astype(str)
+                filter_value = str(filter_value)
+            
+            df_filtered = df[df[filter_col] == filter_value]
+            return df_filtered
+        except:
+            return pd.DataFrame() 
+    
+    return df
+
+
+def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, operation='insert'):
+    """Executa as operações CRUD no Google Sheets, priorizando append_row para inserção."""
+    
+    id_col = f'id_{sheet_name}' if id_col is None else id_col
+    
+    # 1. INSERÇÃO RÁPIDA (APPEND_ROW)
+    if operation == 'insert':
+        new_id = str(uuid.uuid4())
+        data[id_col] = new_id
+        
+        try:
+            gc = get_gspread_client()
+            
+            sh = None
+            try:
+                sh = gc.open_by_key(SHEET_ID)
+            except Exception:
+                sh = gc.open(PLANILHA_TITULO)
+
+            worksheet = sh.worksheet(sheet_name)
+
+            df_cols = get_sheet_data(sheet_name).columns.tolist()
+            if not df_cols:
+                df_cols = list(data.keys()) 
+            
+            row_to_write = [data.get(col, '') for col in df_cols]
+
+            worksheet.append_row(row_to_write, value_input_option='USER_ENTERED')
+            
+            get_sheet_data.clear()
+
+            return True, new_id
+
+        except Exception as e:
+            st.error(f"Erro ao anexar a linha na sheet '{sheet_name}': {e}")
+            return False, None
+
+
+    # 2. ATUALIZAÇÃO OU EXCLUSÃO (UPDATE/DELETE) - Usa o método lento de reescrever
+    elif operation in ['update', 'delete']:
+        df = get_data(sheet_name)
+        if df.empty or id_value is None:
+            return False, None
+        
+        id_value = str(id_value)
+        df[id_col] = df[id_col].astype(str)
+        
+        index_to_modify = df[df[id_col] == id_value].index
+        
+        if index_to_modify.empty:
+            return False, None
+
+        if operation == 'update':
+            for key, value in data.items():
+                if key in df.columns:
+                    df.loc[index_to_modify, key] = value
+            df_updated = df
+        
+        elif operation == 'delete':
+            df_updated = df.drop(index_to_modify).reset_index(drop=True)
+
+        success = write_sheet_data(sheet_name, df_updated)
+        return success, id_value if success else None
+        
+    return False, None
+
+
+def get_full_service_data(date_start=None, date_end=None):
+    """Lê todos os dados e simula a operação JOIN do SQL no Pandas."""
+    
+    df_servicos = get_data('servico')
+    df_veiculos = get_data('veiculo')
+    df_prestadores = get_data('prestador')
+    
+    if df_servicos.empty or df_veiculos.empty or df_prestadores.empty:
+        return pd.DataFrame()
+    
+    # Conversão de IDs para STRING para garantir o MERGE (Chave Estrangeira)
+    df_servicos['id_veiculo'] = df_servicos['id_veiculo'].astype(str)
+    df_servicos['id_prestador'] = df_servicos['id_prestador'].astype(str)
+    df_veiculos['id_veiculo'] = df_veiculos['id_veiculo'].astype(str)
+    df_prestadores['id_prestador'] = df_prestadores['id_prestador'].astype(str)
+    
+    # Conversões numéricas e de data
+    df_servicos['valor'] = pd.to_numeric(df_servicos['valor'], errors='coerce').fillna(0.0).astype(float)
+    df_servicos['garantia_dias'] = pd.to_numeric(df_servicos['garantia_dias'], errors='coerce').fillna(0.0).astype(int)
+    df_servicos['km_realizado'] = pd.to_numeric(df_servicos['km_realizado'], errors='coerce').fillna(0.0).astype(int)
+    df_servicos['km_proxima_revisao'] = pd.to_numeric(df_servicos['km_proxima_revisao'], errors='coerce').fillna(0.0).astype(int)
+    
+    # 1. JOIN com Veiculo
+    df_merged = pd.merge(df_servicos, df_veiculos[['id_veiculo', 'nome', 'placa']], on='id_veiculo', how='left')
+    
+    # 2. JOIN com Prestador
+    df_merged = pd.merge(df_merged, df_prestadores[['id_prestador', 'empresa', 'cidade']], on='id_prestador', how='left')
+    
+    # Renomeia colunas para o display
+    df_merged = df_merged.rename(columns={'nome': 'Veiculo', 'placa': 'Placa', 'empresa': 'Empresa', 'cidade': 'Cidade', 'nome_servico': 'Serviço', 'data_servico': 'Data', 'valor': 'Valor'})
+    
+    # Converte colunas de data (sem NaT)
+    df_merged['Data'] = pd.to_datetime(df_merged['Data'], errors='coerce')
+    df_merged['data_vencimento'] = pd.to_datetime(df_merged['data_vencimento'], errors='coerce')
+
+    # CÁLCULO 2: DIAS RESTANTES DA GARANTIA
+    df_merged['Dias Restantes'] = (df_merged['data_vencimento'] - pd.to_datetime(date.today())).dt.days
+
+    # 3. Filtragem por Data (se necessário)
+    if date_start and date_end:
+        df_merged = df_merged[(df_merged['Data'] >= pd.to_datetime(date_start)) & (df_merged['Data'] <= pd.to_datetime(date_end))]
+        
+    return df_merged.sort_values(by='Data', ascending=False)
+
+
+# --- FUNÇÕES DE CRUD DE ALTO NÍVEL (INSERTS/UPDATES/DELETES) ---
 
 # --- CRUD Veiculo ---
 def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
@@ -321,51 +460,6 @@ def delete_service(id_servico):
     else:
         st.error("Falha ao remover serviço.")
 
-# --- FUNÇÃO QUE SIMULA O JOIN DO SQL ---
-
-def get_full_service_data(date_start=None, date_end=None):
-    """Lê todos os dados e simula a operação JOIN do SQL no Pandas."""
-    
-    df_servicos = get_data('servico')
-    df_veiculos = get_data('veiculo')
-    df_prestadores = get_data('prestador')
-    
-    if df_servicos.empty or df_veiculos.empty or df_prestadores.empty:
-        return pd.DataFrame()
-    
-    # Conversão de IDs para STRING para garantir o MERGE (Chave Estrangeira)
-    df_servicos['id_veiculo'] = df_servicos['id_veiculo'].astype(str)
-    df_servicos['id_prestador'] = df_servicos['id_prestador'].astype(str)
-    df_veiculos['id_veiculo'] = df_veiculos['id_veiculo'].astype(str)
-    df_prestadores['id_prestador'] = df_prestadores['id_prestador'].astype(str)
-    
-    # Conversões numéricas e de data
-    df_servicos['valor'] = pd.to_numeric(df_servicos['valor'], errors='coerce').fillna(0.0).astype(float)
-    df_servicos['garantia_dias'] = pd.to_numeric(df_servicos['garantia_dias'], errors='coerce').fillna(0.0).astype(int)
-    df_servicos['km_realizado'] = pd.to_numeric(df_servicos['km_realizado'], errors='coerce').fillna(0.0).astype(int)
-    df_servicos['km_proxima_revisao'] = pd.to_numeric(df_servicos['km_proxima_revisao'], errors='coerce').fillna(0.0).astype(int)
-    
-    # 1. JOIN com Veiculo
-    df_merged = pd.merge(df_servicos, df_veiculos[['id_veiculo', 'nome', 'placa']], on='id_veiculo', how='left')
-    
-    # 2. JOIN com Prestador
-    df_merged = pd.merge(df_merged, df_prestadores[['id_prestador', 'empresa', 'cidade']], on='id_prestador', how='left')
-    
-    # Renomeia colunas para o display
-    df_merged = df_merged.rename(columns={'nome': 'Veiculo', 'placa': 'Placa', 'empresa': 'Empresa', 'cidade': 'Cidade', 'nome_servico': 'Serviço', 'data_servico': 'Data', 'valor': 'Valor'})
-    
-    # Converte colunas de data (sem NaT)
-    df_merged['Data'] = pd.to_datetime(df_merged['Data'], errors='coerce')
-    df_merged['data_vencimento'] = pd.to_datetime(df_merged['data_vencimento'], errors='coerce')
-
-    # CÁLCULO 2: DIAS RESTANTES DA GARANTIA
-    df_merged['Dias Restantes'] = (df_merged['data_vencimento'] - pd.to_datetime(date.today())).dt.days
-
-    # 3. Filtragem por Data (se necessário)
-    if date_start and date_end:
-        df_merged = df_merged[(df_merged['Data'] >= pd.to_datetime(date_start)) & (df_merged['Data'] <= pd.to_datetime(date_end))]
-        
-    return df_merged.sort_values(by='Data', ascending=False)
 
 # ==============================================================================
 # 🚨 CSS PERSONALIZADO 🚨
