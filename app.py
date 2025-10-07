@@ -12,7 +12,11 @@ import uuid
 
 # Defina a URL ou ID da sua planilha AQUI
 SHEET_ID = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBHFr9Q-4g' 
+# O nome REAL da planilha. Deve ser EXATO.
 PLANILHA_TITULO = 'Dados Automóvel' 
+# Usaremos o ID como título alternativo de fallback
+PLANILHA_TITULO_ALTERNATE = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBHFr9Q-4g' 
+
 
 @st.cache_resource(ttl=3600) 
 def get_gspread_client():
@@ -41,18 +45,22 @@ def get_sheet_data(sheet_name):
     try:
         gc = get_gspread_client()
         
-        # 🛑 LÓGICA DUPLA DE CONEXÃO: Tenta por chave, se falhar, tenta por título.
+        # 🛑 LÓGICA TRIPLA DE CONEXÃO: Tenta por chave, título normal, e título alternativo (ID).
         sh = None
         try:
             sh = gc.open_by_key(SHEET_ID)
         except Exception:
             try:
-                st.warning(f"Falha ao abrir por Chave (ID: {SHEET_ID}). Tentando por Título...")
-                sh = gc.open(PLANILHA_TITULO)
-            except Exception as e:
-                 # Se falhar pelo título também, exibe a falha crítica
-                st.error(f"Falha Crítica ao conectar à planilha. Verifique se a Service Account tem permissão de EDITOR na planilha e o nome: {e}")
-                return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
+                st.warning(f"Falha ao abrir por Chave (ID: {SHEET_ID}). Tentando por Título Normal...")
+                sh = gc.open(PLANILHA_TITULO) 
+            except Exception:
+                 try:
+                     st.warning(f"Falha ao abrir por Título Normal. Tentando por Título como ID (Alternativo)...")
+                     sh = gc.open(PLANILHA_TITULO_ALTERNATE)
+                 except Exception as e:
+                    # Se falhar todas as 3 vezes, exibe a falha crítica
+                    st.error(f"Falha Crítica ao conectar à planilha. Verifique se a Service Account tem permissão de EDITOR na planilha: {e}")
+                    return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
         
         worksheet = sh.worksheet(sheet_name)
         
