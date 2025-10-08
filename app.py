@@ -212,6 +212,10 @@ def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, op
 # --- Funções de Inserção/Atualização/Exclusão (CRUD) ---
 
 # Veículo
+# --- Funções de Inserção/Atualização/Exclusão (CRUD) ---
+
+# Veículo
+
 def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
 
     # 🛑 CORRIGIDO: usa .isoformat() para garantir a serialização da data
@@ -221,7 +225,7 @@ def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
             st.error(f"Placa '{placa}' já cadastrada.")
             return False
 
-data = {
+    data = {
         'id_veiculo': 0,
         'nome': nome, 'placa': placa,
         'ano': ano, 'valor_pago': float(valor_pago), 'data_compra': data_compra.isoformat() # ✅ CORREÇÃO APLICADA
@@ -237,9 +241,9 @@ data = {
         st.error("Falha ao cadastrar veículo.")
 
 
-    def update_vehicle(id_veiculo, nome, placa, ano, valor_pago, data_compra):
+def update_vehicle(id_veiculo, nome, placa, ano, valor_pago, data_compra):
 
-   # 🛑 CORRIGIDO: usa .isoformat() para garantir a serialização da data
+    # 🛑 CORRIGIDO: usa .isoformat() para garantir a serialização da data
     if placa:
         df_check = get_data('veiculo', 'placa', placa)
         if not df_check.empty:
@@ -262,8 +266,7 @@ data = {
         st.rerun()
     else:
         st.error("Falha ao atualizar veículo.")
-
-
+        
 def delete_vehicle(id_veiculo):
     # Simulação da verificação de chave estrangeira
     df_servicos = get_data('servico', 'id_veiculo', int(id_veiculo))
