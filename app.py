@@ -212,7 +212,7 @@ def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, op
 # --- Funções de Inserção/Atualização/Exclusão (CRUD) ---
 
 # Veículo
-    def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
+def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
 
     # 🛑 CORRIGIDO: usa .isoformat() para garantir a serialização da data
     if placa:
